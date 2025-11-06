@@ -1,0 +1,43 @@
+# .github/workflows/generate.yml
+
+name: Generate New Levels
+
+on:
+  # This runs the job on a schedule
+  # "0 */4 * * *" is a cron expression for "at minute 0, every 4 hours"
+  schedule:
+    - cron: "0 */4 * * *"
+  
+  # This also lets you run it manually from the "Actions" tab on GitHub
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18 # Use a stable version of Node.js
+
+      - name: Run the level generation script
+        run: node generate-levels.js
+        # This will run your script and create a new levels.json
+
+      - name: Commit the new levels.json
+        run: |
+          git config --global user.name 'Level Generator Bot'
+          git config --global user.email 'bot@example.com'
+          git add levels.json
+          # Only commit if there are changes
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto: Generate new levels"
+          
+      - name: Push the changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
