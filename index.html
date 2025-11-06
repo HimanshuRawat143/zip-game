@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pathfinder - Unlimited ZIP-like Puzzle Game</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+        .shake { animation: shake 0.3s ease-in-out; }
+        .cell { user-select: none; -webkit-user-select: none; touch-action: none; }
+        .waypoint-inner { pointer-events: none; }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div id="game-container" class="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+        <div class="flex justify-between items-center mb-4">
+            <h1 class="text-3xl font-bold text-gray-900">Pathfinder</h1>
+            <div class="text-lg font-medium text-blue-600">Level: <span id="level-display">1</span></div>
+        </div>
+        
+        <div class="text-center mb-4">
+            <div class="text-xl font-bold font-mono text-gray-900" id="timer-display">00:00:000</div>
+        </div>
+        
+        <div id="grid-container" class="grid gap-2 mb-4"></div>
+        
+        <div class="flex justify-center mt-4">
+            <button id="reset-button" class="bg-red-500 hover:bg-red-600 text-white px-6 py-2 rounded-lg font-semibold shadow-lg transition-colors">
+                Reset Level
+            </button>
+        </div>
+    </div>
+
+    <div id="win-modal" class="fixed inset-0 bg-black/50 flex items-center justify-center hidden z-20">
+        <div class="bg-white p-8 rounded-xl text-center shadow-2xl">
+            <h2 id="win-modal-title" class="text-3xl font-bold text-green-600 mb-4">Level Complete!</h2>
+            <p class="text-xl text-gray-700 mb-4">Your Time: <span id="win-time" class="font-mono font-bold text-blue-600"></span></p>
+            <div id="win-spinner" class="flex justify-center">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+            </div>
+            <p id="win-message" class="text-sm text-gray-500 mt-2">Loading next level...</p>
+        </div>
+    </div>
+
+    <div id="try-again" class="fixed top-4 left-1/2 transform -translate-x-1/2 bg-red-500 text-white px-6 py-3 rounded-lg font-semibold shadow-lg hidden z-20">
+        Try Again!
+    </div>
+
+    <script>
+        let allLevelsData = [];
+
+        let gameState = {
+            level: 1,
+            timer: 0,
+            timerInterval: null
+        };
+
+        let levelData = {};
+        let currentPath = [];
+        let isDrawing = false;
+        
+        window.onload = async () => {
+            document.getElementById('reset-button').onclick = () => loadLevel(gameState.level);
+            
+            try {
+                console.log("Fetching levels.json...");
+                const response = await fetch('levels.json');
+                if (!response.ok) throw new Error('levels.json not found!');
+                allLevelsData = await response.json();
+                console.log(`Loaded ${allLevelsData.length} levels.`);
+                
+                loadLevel(gameState.level);
+
+            } catch (error) {
+                console.error("Failed to load levels:", error);
+                document.getElementById('game-container').innerHTML = `
+                    <h2 class="text-red-600 font-bold text-xl">Error: Could not load levels.json</h2>
+                    <p class="mt-2 text-gray-700">Did you forget to run the 'generate-levels.js' script? Or are you running this from a local server?</p>
+                    <p class="mt-4 text-sm text-gray-500">See the browser console for more details.</p>
+                `;
+            }
+        };
+
+        function loadLevel(levelNumber) {
+            gameState.level = levelNumber;
+            document.getElementById('level-display').innerText = levelNumber;
+            currentPath = [];
+            isDrawing = false;
+
+            if (gameState.timerInterval) {
+                clearInterval(gameState.timerInterval);
+            }
+
+            let levelIndex = levelNumber - 1;
+
+            if (levelIndex >= allLevelsData.length) {
+                console.log("All levels complete! Replaying last level.");
+                levelIndex = allLevelsData.length - 1; 
+            }
+
+            levelData = allLevelsData[levelIndex];
+
+            renderGrid();
+            startTimer();
+        }
+
+        function winLevel() {
+            clearInterval(gameState.timerInterval);
+            
+            const winModal = document.getElementById('win-modal');
+            const winTime = document.getElementById('win-time');
+            winTime.innerText = document.getElementById('timer-display').innerText;
+            winModal.classList.remove('hidden');
+
+            if (gameState.level === allLevelsData.length) {
+                document.getElementById('win-modal-title').innerText = "All Levels Complete!";
+                document.getElementById('win-message').innerText = "You're a Pathfinder master! Resetting to Level 1.";
+                document.getElementById('win-spinner').classList.add('hidden');
+                
+                setTimeout(() => {
+                    winModal.classList.add('hidden');
+                    loadLevel(1); // Restart game
+                }, 4000);
+            } else {
+                document.getElementById('win-modal-title').innerText = "Level Complete!";
+                document.getElementById('win-message').innerText = "Loading next level...";
+                document.getElementById('win-spinner').classList.remove('hidden');
+
+                setTimeout(() => {
+                    winModal.classList.add('hidden');
+                    loadLevel(gameState.level + 1);
+                }, 2500);
+            }
+        }
+
+        function validatePath() {
+            const pathLen = currentPath.length;
+            
+            if (pathLen !== levelData.totalCells) {
+                resetPath();
+                return;
+            }
+            let lastPathIndex = -1;
+            for (let i = 1; i <= levelData.numWaypoints; i++) {
+                const [wr, wc] = levelData.waypoints[i];
+                const pathIndex = currentPath.findIndex(([pr, pc]) => pr === wr && pc === wc);
+
+                if (pathIndex === -1 || pathIndex < lastPathIndex) {
+                    resetPath();
+                    return;
+                }
+                lastPathIndex = pathIndex;
+            }
+
+            winLevel();
+        }
+
+        function startTimer() {
+            const startTime = Date.now();
+            gameState.timerInterval = setInterval(() => {
+                const elapsed = Date.now() - startTime;
+                document.getElementById('timer-display').innerText = formatTime(elapsed);
+            }, 10);
+        }
+
+        function formatTime(ms) {
+            const minutes = Math.floor(ms / 60000);
+            const seconds = Math.floor((ms % 60000) / 1000);
+            const milliseconds = ms % 1000;
+            return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}:${String(milliseconds).padStart(3, '0')}`;
+        }
+
+        function renderGrid() {
+            const gridContainer = document.getElementById('grid-container');
+            gridContainer.innerHTML = '';
+            gridContainer.style.gridTemplateColumns = `repeat(${levelData.gridSize}, 1fr)`;
+
+            for (let r = 0; r < levelData.gridSize; r++) {
+                for (let c = 0; c < levelData.gridSize; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell w-full aspect-square bg-gray-200 rounded-lg transition-all duration-100';
+                    cell.dataset.r = r;
+                    cell.dataset.c = c;
+
+                    let waypointNum = null;
+                    for (const [num, [wr, wc]] of Object.entries(levelData.waypoints)) {
+                        if (wr === r && wc === c) {
+                            waypointNum = num;
+                            break;
+                        }
+                    }
+
+                    if (waypointNum) {
+                        const inner = document.createElement('div');
+                        inner.className = 'waypoint-inner w-3/4 h-3/4 m-auto rounded-full flex items-center justify-center font-bold text-white bg-blue-600 shadow-md transition-all duration-100';
+                        inner.innerText = waypointNum;
+                        cell.appendChild(inner);
+                    }
+                    gridContainer.appendChild(cell);
+                }
+            }
+            addInputListeners();
+        }
+
+        function addInputListeners() {
+            const grid = document.getElementById('grid-container');
+            grid.addEventListener('mousedown', handleDrawStart);
+            grid.addEventListener('mousemove', handleDrawMove);
+            grid.addEventListener('mouseup', handleDrawEnd);
+            grid.addEventListener('mouseleave', handleDrawEnd);
+            grid.addEventListener('touchstart', handleDrawStart, { passive: false });
+            grid.addEventListener('touchmove', handleDrawMove, { passive: false });
+            grid.addEventListener('touchend', handleDrawEnd);
+        }
+
+        function getCellFromEvent(e) {
+            let target;
+            if (e.type.startsWith('touch')) {
+                const touch = e.touches[0] || e.changedTouches[0];
+                target = document.elementFromPoint(touch.clientX, touch.clientY);
+            } else {
+                target = e.target;
+            }
+            while (target && !target.dataset.r) {
+                target = target.parentElement;
+            }
+            if (target && target.dataset.r !== undefined) {
+                return { r: parseInt(target.dataset.r), c: parseInt(target.dataset.c) };
+            }
+            return null;
+        }
+
+        function handleDrawStart(e) {
+            e.preventDefault();
+            const cell = getCellFromEvent(e);
+            if (!cell) return;
+            const { r, c } = cell;
+            const [startR, startC] = levelData.waypoints[1];
+            if (r === startR && c === startC) {
+                isDrawing = true;
+                currentPath = [[r, c]];
+                updatePathVisuals();
+            }
+        }
+
+        function handleDrawMove(e) {
+            e.preventDefault();
+            if (!isDrawing) return;
+            const cell = getCellFromEvent(e);
+            if (!cell) return;
+            const { r, c } = cell;
+            const [lastR, lastC] = currentPath[currentPath.length - 1];
+            const isAdjacent = (Math.abs(r - lastR) === 1 && c === lastC) || (Math.abs(c - lastC) === 1 && r === lastR);
+            const notInPath = !currentPath.some(([pr, pc]) => pr === r && pc === c);
+            if (isAdjacent && notInPath) {
+                currentPath.push([r, c]);
+                updatePathVisuals();
+            }
+        }
+
+        function handleDrawEnd(e) {
+            if (!isDrawing) return;
+            isDrawing = false;
+            validatePath();
+        }
+
+        function updatePathVisuals() {
+            const gridContainer = document.getElementById('grid-container');
+            const cells = gridContainer.querySelectorAll('.cell');
+            cells.forEach(cell => {
+                const r = parseInt(cell.dataset.r);
+                const c = parseInt(cell.dataset.c);
+                const inPath = currentPath.some(([pr, pc]) => pr === r && pc === c);
+                if (inPath) {
+                    cell.classList.add('bg-blue-300');
+                    cell.classList.remove('bg-gray-200');
+                    const inner = cell.querySelector('.waypoint-inner');
+                    if (inner) {
+                        inner.classList.add('bg-green-500');
+                        inner.classList.remove('bg-blue-600');
+                    }
+                } else {
+                    cell.classList.remove('bg-blue-300');
+                    cell.classList.add('bg-gray-200');
+                    const inner = cell.querySelector('.waypoint-inner');
+                    if (inner) {
+                        inner.classList.remove('bg-green-500');
+                        inner.classList.add('bg-blue-600');
+                    }
+                }
+            });
+        }
+
+        function resetPath() {
+            currentPath = [];
+            const tryAgain = document.getElementById('try-again');
+            tryAgain.classList.remove('hidden');
+            setTimeout(() => { tryAgain.classList.add('hidden'); }, 1000);
+            const gridContainer = document.getElementById('grid-container');
+            gridContainer.classList.add('shake');
+            setTimeout(() => { gridContainer.classList.remove('shake'); }, 300);
+            updatePathVisuals();
+        }
+    </script>
+</body>
+</html>
